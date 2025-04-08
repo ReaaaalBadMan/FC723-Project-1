@@ -1,109 +1,205 @@
-# Python Seat-Booking Application for Apache Airlines
-# -----------------------------------------------------
-# This program simulates a seat booking system for an airline.
-# The aircraft is divided into two sections:
-# - Front Section: Rows 1 to 80 with columns A, B, C (all bookable)
-# - Rear Section: Rows 1 to 80 with columns D, E, F 
-# - Rows 77-78 in columns D, E, F represent storage areas ("S") and are not bookable.
-# All bookable seats are initially free (represented by "F").
-# When a seat is booked, its status changes to "R".
-# The program displays a menu to allow the user to perform different operations until exit.
+import sqlite3
+import random
+import string
 
-# Define the seating layout for the front and rear sections
+# --------------------------
+# Database Setup Functions
+# --------------------------
+def init_db():
+    """
+    Initializes the SQLite database and creates the 'bookings' table if it does not exist.
+    The table stores booking details: booking reference, passport number, first name, last name,
+    seat row, seat column, and the complete seat identifier.
+    """
+    global conn
+    conn = sqlite3.connect("bookings.db")  # Creates or opens the database file
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bookings (
+            booking_ref TEXT PRIMARY KEY,
+            passport_number TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            seat_row INTEGER,
+            seat_column TEXT,
+            seat_id TEXT UNIQUE
+        )
+    ''')
+    conn.commit()
 
-# Front section: rows numbered 1 through 80 and columns A, B, C.
-front_rows = range(1, 81)          # Rows from 1 to 80 for the front section
-front_columns = ['A', 'B', 'C']     # Columns A, B, C for the front section
+def generate_booking_ref():
+    """
+    Generates a unique eight-character alphanumeric booking reference.
+    Uses random choices from uppercase letters and digits.
+    The function queries the database to ensure that the generated reference is unique,
+    generating a new one if a duplicate is found.
+    """
+    cursor = conn.cursor()
+    while True:
+        booking_ref = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+        cursor.execute("SELECT COUNT(*) FROM bookings WHERE booking_ref = ?", (booking_ref,))
+        (count,) = cursor.fetchone()
+        if count == 0:
+            return booking_ref
 
-# Rear section: same rows (1 to 80) but columns D, E, F.
-rear_rows = range(1, 81)           # Rows from 1 to 80 for the rear section
-rear_columns = ['D', 'E', 'F']      # Columns D, E, F for the rear section
+def load_existing_bookings():
+    """
+    Loads booking records from the database and updates the in-memory seats dictionary.
+    This ensures that previously booked seats (stored in the database) are marked as booked
+    in the application's seating map when the program starts.
+    """
+    cursor = conn.cursor()
+    cursor.execute("SELECT seat_id, booking_ref FROM bookings")
+    booked_seats = cursor.fetchall()
+    for seat_id, booking_ref in booked_seats:
+        if seat_id in seats:
+            seats[seat_id] = booking_ref
 
-# Create a dictionary to store the status of each seat.
-# The keys are seat identifiers (e.g., "1A", "3B") and the values represent:
-#   "F" for free, "R" for reserved, and "S" for storage (non-bookable).
+# --------------------------
+# Seating Layout Setup
+# --------------------------
+
+# Define seating layout for front and rear sections.
+front_rows = range(1, 81)           # Front section rows 1-80
+front_columns = ['A', 'B', 'C']      # Front section columns
+
+rear_rows = range(1, 81)            # Rear section rows 1-80
+rear_columns = ['D', 'E', 'F']       # Rear section columns
+
+# Create a dictionary to store the current status of each seat.
+# For free seats, the value is "F".
+# For storage areas, the value is "S".
+# For booked seats, the value will be the unique booking reference.
 seats = {}
 
-# Initialize all front section seats as free ("F")
+# Initialize front section seats as free.
 for row in front_rows:
     for col in front_columns:
-        seat_id = str(row) + col          # Create seat ID, e.g., "1A"
-        seats[seat_id] = "F"                # Mark seat as free
+        seat_id = str(row) + col
+        seats[seat_id] = "F"
 
-# Initialize all rear section seats.
-# Note: In rows 77 and 78, seats in the rear section are marked as storage ("S") and are not bookable.
+# Initialize rear section seats.
+# Note: Rows 77 and 78 in the rear section are designated as storage ("S").
 for row in rear_rows:
     for col in rear_columns:
-        seat_id = str(row) + col          # Create seat ID, e.g., "77D"
+        seat_id = str(row) + col
         if row in [77, 78]:
-            seats[seat_id] = "S"          # Mark storage seats as "S"
+            seats[seat_id] = "S"
         else:
-            seats[seat_id] = "F"          # All other seats are free ("F")
+            seats[seat_id] = "F"
 
+# --------------------------
+# Application Functionalities
+# --------------------------
 def check_availability():
     """
     Checks if a specified seat is available for booking.
-    Prompts the user to input a seat number.
-    Displays whether the seat is free, already reserved, or not bookable.
+    Prompts the user to input a seat number and then displays whether the seat is free,
+    already booked (shows the booking reference), or not bookable (storage area).
     """
-    seat_id = input("Enter the seat number (e.g., 1A, 3D): ").upper()  # Convert input to uppercase to match keys
-    if seat_id in seats:                         # Validate if the seat exists
+    seat_id = input("Enter the seat number (e.g., 1A, 3D): ").upper()
+    if seat_id in seats:
         status = seats[seat_id]
         if status == "F":
             print(f"Seat {seat_id} is free and available for booking.")
-        elif status == "R":
-            print(f"Seat {seat_id} is already booked.")
         elif status == "S":
             print(f"Seat {seat_id} is a storage area and cannot be booked.")
+        else:
+            # If the seat status is not F or S, it stores a booking reference.
+            print(f"Seat {seat_id} is booked with reference {status}.")
     else:
         print("Invalid seat number. Please try again.")
 
 def book_seat():
     """
     Books a specified seat if it is free.
-    Prompts the user to input the seat number to book.
-    Changes the seat status from free ("F") to reserved ("R") if available.
+    In addition to booking the seat, the function:
+      - Generates a unique booking reference.
+      - Prompts the user for traveller details (passport number, first name, last name).
+      - Updates the seat status in the 'seats' dictionary to the booking reference.
+      - Inserts a new record with booking details into the SQLite database.
     """
     seat_id = input("Enter the seat number to book (e.g., 1A, 3D): ").upper()
-    if seat_id in seats:                         # Check if seat exists in the seating layout
+    if seat_id in seats:
         status = seats[seat_id]
-        if status == "F":                        # Only free seats can be booked
-            seats[seat_id] = "R"                 # Update the seat's status to reserved
-            print(f"Seat {seat_id} has been successfully booked.")
-        elif status == "R":
-            print(f"Seat {seat_id} is already booked.")
+        if status == "F":  # Only free seats can be booked
+            # Generate a unique 8-character booking reference.
+            booking_ref = generate_booking_ref()
+            
+            # Prompt for traveller details.
+            passport_number = input("Enter passport number: ").strip()
+            first_name = input("Enter first name: ").strip()
+            last_name = input("Enter last name: ").strip()
+            
+            # Determine the seat's row and column based on the seat_id.
+            # Assumes the seat_id is in the format <row><column>, e.g., "23B".
+            row_part = seat_id[:-1]
+            col_part = seat_id[-1]
+            try:
+                seat_row = int(row_part)
+            except ValueError:
+                print("Invalid seat row.")
+                return
+
+            # Update the seat dictionary with the booking reference.
+            seats[seat_id] = booking_ref
+            
+            # Insert the booking details into the database.
+            cursor = conn.cursor()
+            try:
+                cursor.execute('''
+                    INSERT INTO bookings (booking_ref, passport_number, first_name, last_name, seat_row, seat_column, seat_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (booking_ref, passport_number, first_name, last_name, seat_row, col_part, seat_id))
+                conn.commit()
+                print(f"Seat {seat_id} has been successfully booked.")
+                print(f"Your booking reference is: {booking_ref}")
+            except sqlite3.IntegrityError:
+                # In case the booking record already exists, revert the seat status.
+                seats[seat_id] = "F"
+                print("Error: This seat has already been booked.")
         elif status == "S":
             print(f"Seat {seat_id} is a storage area and cannot be booked.")
+        else:
+            print(f"Seat {seat_id} is already booked with reference {status}.")
     else:
         print("Invalid seat number. Please try again.")
 
 def free_seat():
     """
     Frees a booked seat.
-    Prompts the user to input the seat number to free.
-    Only seats that have been booked ("R") can be freed to become available ("F").
+    Prompts the user to input the seat number. If the seat is booked,
+    the function sets the seat status back to free ("F") and removes any
+    corresponding booking record from the database.
     """
     seat_id = input("Enter the seat number to free (e.g., 1A, 3D): ").upper()
-    if seat_id in seats:                         # Validate if seat exists
+    if seat_id in seats:
         status = seats[seat_id]
-        if status == "R":                        # Can only free a seat that is currently booked
-            seats[seat_id] = "F"                 # Change the seat status back to free
+        # Only booked seats (neither free "F" nor storage "S") can be freed.
+        if status != "F" and status != "S":
+            booking_ref = status  # The current value is the booking reference.
+            # Remove the booking record from the database.
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM bookings WHERE booking_ref = ?", (booking_ref,))
+            conn.commit()
+            
+            # Update seat status to free.
+            seats[seat_id] = "F"
             print(f"Seat {seat_id} has been freed and is now available.")
         elif status == "F":
             print(f"Seat {seat_id} is already free.")
-        elif status == "S":
+        else:
             print(f"Seat {seat_id} is a storage area and cannot be freed.")
     else:
         print("Invalid seat number. Please try again.")
 
 def show_booking_status():
     """
-    Displays the current booking status of the aircraft seating.
-    Organizes the display by grouping rows (10 at a time) and separating 
-    the front and rear sections with an aisle in between.
+    Displays the current booking status for the aircraft seating.
+    The display is organized by grouping rows (10 at a time) and showing both the front and rear sections,
+    with an aisle separator. Booked seats will display the booking reference instead of 'R'.
     """
     while True:
-        # Show selection menu for rows to display
         print("\nSelect rows to display (10 rows at a time):")
         print("1. Rows 1-10")
         print("2. Rows 11-20")
@@ -116,42 +212,39 @@ def show_booking_status():
         print("9. Return to main menu")
         
         choice = input("Enter your choice (1-9): ")
-        if choice == '9':                       # Option to return to the main menu
+        if choice == '9':
             return
         
         try:
             choice = int(choice)
             if 1 <= choice <= 8:
-                # Calculate start and end rows for the selected grouping
                 start_row = (choice - 1) * 10 + 1
                 end_row = start_row + 9
                 
                 print(f"\n--- Booking Status (Rows {start_row}-{end_row}) ---")
                 
-                # Display the front section seats for the selected rows
+                # Display Front Section (Rows start_row to end_row, Columns A-C)
                 print(f"\nFront Section (Rows {start_row}-{end_row}, Columns A-C):")
                 for row in range(start_row, end_row + 1):
                     row_display = ""
                     for col in front_columns:
-                        seat_id = str(row) + col      # Construct seat ID
-                        # Display each seat and its current status (F, R, or S)
+                        seat_id = str(row) + col
                         row_display += f"{seat_id}({seats[seat_id]})  "
                     print(row_display)
                 
-                # Print an aisle separator between front and rear sections
+                # Display aisle separator
                 print("\nAisle:")
                 print("X   X   X")
                 
-                # Display the rear section seats for the selected rows
+                # Display Rear Section (Rows start_row to end_row, Columns D-F)
                 print(f"\nRear Section (Rows {start_row}-{end_row}, Columns D-F):")
                 for row in range(start_row, end_row + 1):
                     row_display = ""
                     for col in rear_columns:
-                        seat_id = str(row) + col      # Construct seat ID
-                        # Display each seat and its current status
+                        seat_id = str(row) + col
                         row_display += f"{seat_id}({seats[seat_id]})  "
                     print(row_display)
-                print()  # Blank line for better readability after printing a block
+                print()  # Blank line for improved readability
             else:
                 print("Invalid choice. Please select a number between 1 and 9.")
         except ValueError:
@@ -159,8 +252,8 @@ def show_booking_status():
 
 def main_menu():
     """
-    Displays the main menu for the seat-booking system and processes the user’s selection.
-    Loops continuously until the user decides to exit the program.
+    Main menu loop that displays options and handles user selections.
+    The menu remains until the user chooses to exit the program.
     """
     while True:
         print("===== Apache Airlines Seat-Booking System =====")
@@ -171,7 +264,6 @@ def main_menu():
         print("5. Exit program")
         choice = input("Enter your choice (1-5): ")
         
-        # Route the user's choice to the appropriate function
         if choice == '1':
             check_availability()
         elif choice == '2':
@@ -185,10 +277,17 @@ def main_menu():
             break
         else:
             print("Invalid choice. Please select a valid option (1-5).")
-        print()  # Blank line added for better visual separation between operations
+        print()  # Blank line for visual separation
 
-# Entry point of the program
+# --------------------------
+# Entry Point of the Program
+# --------------------------
 if __name__ == "__main__":
-    # Start the main menu loop when the script is run directly.
+    # Initialize database connection and create bookings table.
+    init_db()
+    # Load any existing bookings from the database into the in-memory seats dictionary.
+    load_existing_bookings()
+    # Start the main application loop.
     main_menu()
-# The program will continue to run until the user chooses to exit.
+    # Close the database connection when the program exits.
+    conn.close()
